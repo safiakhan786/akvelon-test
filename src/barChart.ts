@@ -15,6 +15,7 @@ import "regenerator-runtime/runtime";
 import powerbi = powerbiVisualsApi;
 
 type Selection<T1, T2 = T1> = d3.Selection<any, T1, any, T2>;
+import ScaleLinear = d3.ScaleLinear;
 const getEvent = () => require("d3-selection").event;
 
 // powerbi.visuals
@@ -33,12 +34,14 @@ import VisualObjectInstanceEnumeration = powerbi.VisualObjectInstanceEnumeration
 import VisualTooltipDataItem = powerbi.extensibility.VisualTooltipDataItem;
 import VisualUpdateOptions = powerbi.extensibility.visual.VisualUpdateOptions;
 import VisualConstructorOptions = powerbi.extensibility.visual.VisualConstructorOptions;
+import VisualEnumerationInstanceKinds = powerbi.VisualEnumerationInstanceKinds;
 
 import {createTooltipServiceWrapper, ITooltipServiceWrapper} from "powerbi-visuals-utils-tooltiputils";
 import { textMeasurementService } from "powerbi-visuals-utils-formattingutils";
 
 import { getValue, getCategoricalObjectValue } from "./objectEnumerationUtility";
 import { getLocalizedString } from "./localization/localizationHelper"
+import { dataViewWildcard } from "powerbi-visuals-utils-dataviewutils";
 
 /**
  * Interface for BarCharts viewmodel.
@@ -77,7 +80,8 @@ interface BarChartDataPoint {
  *
  * @interface
  * @property {{show:boolean}} enableAxis - Object property that allows axis to be enabled.
- * @property {{generalView.width:number}} Bars - Width - Controls width of plotted bars
+ * @property {{generalView.opacity:number}} Bars Opacity - Controls opacity of plotted bars, values range between 10 (almost transparent) to 100 (fully opaque, default)
+ * @property {{generalView.showHelpLink:boolean}} Show Help Button - When TRUE, the plot displays a button which launch a link to documentation.
  */
 interface BarChartSettings {
     enableAxis: {
@@ -86,19 +90,34 @@ interface BarChartSettings {
     };
 
     generalView: {
+        opacity: number;
+        showHelpLink: boolean;
+        helpLinkColor: string;
+    };
+
+    averageLine: {
+        show: boolean;
         displayName: string;
-        width: number;
+        fill: string;
+        showDataLabel: boolean;
     };
 }
 
 let defaultSettings: BarChartSettings = {
     enableAxis: {
-        show: true,
+        show: false,
         fill: "#000000",
     },
     generalView: {
-        displayName: 'Width',
-        width: 30,
+        opacity: 100,
+        showHelpLink: false,
+        helpLinkColor: "#80B0E0",
+    },
+    averageLine: {
+        show: false,
+        displayName: "Average Line",
+        fill: "#888888",
+        showDataLabel: false
     }
 };
 
@@ -147,8 +166,15 @@ function visualTransform(options: VisualUpdateOptions, host: IVisualHost): BarCh
             fill: getAxisTextFillColor(objects, colorPalette, defaultSettings.enableAxis.fill),
         },
         generalView: {
-            width: getValue<number>(objects, 'generalView', 'width', defaultSettings.generalView.width),
-            displayName: getValue<string>(objects, 'generalView', 'displayName', defaultSettings.generalView.displayName),
+            opacity: getValue<number>(objects, 'generalView', 'opacity', defaultSettings.generalView.opacity),
+            showHelpLink: getValue<boolean>(objects, 'generalView', 'showHelpLink', defaultSettings.generalView.showHelpLink),
+            helpLinkColor: strokeColor,
+        },
+        averageLine: {
+            show: getValue<boolean>(objects, 'averageLine', 'show', defaultSettings.averageLine.show),
+            displayName: getValue<string>(objects, 'averageLine', 'displayName', defaultSettings.averageLine.displayName),
+            fill: getValue<string>(objects, 'averageLine', 'fill', defaultSettings.averageLine.fill),
+            showDataLabel: getValue<boolean>(objects, 'averageLine', 'showDataLabel', defaultSettings.averageLine.showDataLabel),
         },
     };
 
@@ -247,13 +273,18 @@ export class BarChart implements IVisual {
     private barChartSettings: BarChartSettings;
     private tooltipServiceWrapper: ITooltipServiceWrapper;
     private locale: string;
+    private helpLinkElement: Selection<any>;
     private element: HTMLElement;
+    private isLandingPageOn: boolean;
+    private LandingPageRemoved: boolean;
+    private LandingPage: Selection<any>;
+    private averageLine: Selection<SVGElement>;
 
     private barSelection: d3.Selection<d3.BaseType, any, d3.BaseType, any>;
 
     static Config = {
         xScalePadding: 0.1,
-        width: 30,
+        solidOpacity: 1,
         transparentOpacity: 0.4,
         margins: {
             top: 0,
@@ -296,6 +327,13 @@ export class BarChart implements IVisual {
             .append('g')
             .classed('xAxis', true);
 
+        this.initAverageLine();
+
+        const helpLinkElement: Element = this.createHelpLinkElement();
+        options.element.appendChild(helpLinkElement);
+
+        this.helpLinkElement = d3Select(helpLinkElement);
+
         this.handleContextMenu();
     }
 
@@ -311,7 +349,8 @@ export class BarChart implements IVisual {
         let viewModel: BarChartViewModel = visualTransform(options, this.host);
         let settings = this.barChartSettings = viewModel.settings;
         this.barDataPoints = viewModel.dataPoints;
-        
+        // Turn on landing page in capabilities and remove comment to turn on landing page!
+        // this.HandleLandingPage(options);
         let width = options.viewport.width;
         let height = options.viewport.height;
 
@@ -323,6 +362,11 @@ export class BarChart implements IVisual {
             let margins = BarChart.Config.margins;
             height -= margins.bottom;
         }
+
+        this.helpLinkElement
+            .classed("hidden", !settings.generalView.showHelpLink)
+            .style("border-color", settings.generalView.helpLinkColor)
+            .style("color", settings.generalView.helpLinkColor);
 
         this.xAxis
             .style("font-size", Math.min(height, width) * BarChart.Config.xAxisFontMultiplier)
@@ -349,6 +393,7 @@ export class BarChart implements IVisual {
 
         const textNodes = this.xAxis.selectAll("text")
         BarChart.wordBreak(textNodes, xScale.bandwidth(), height);
+        this.handleAverageLineUpdate(height, width, yScale);
 
         this.barSelection = this.barContainer
             .selectAll('.bar')
@@ -361,13 +406,17 @@ export class BarChart implements IVisual {
 
         barSelectionMerged.classed('bar', true);
 
-        const barWidth: number = viewModel.settings.generalView.width;
+        const opacity: number = viewModel.settings.generalView.opacity / 100;
         barSelectionMerged
-            .attr("width", barWidth)
+            .attr("width", xScale.bandwidth())
             .attr("height", d => height - yScale(<number>d.value))
             .attr("y", d => yScale(<number>d.value))
             .attr("x", d => xScale(d.category))
+            .style("fill-opacity", opacity)
+            .style("stroke-opacity", opacity)
             .style("fill", (dataPoint: BarChartDataPoint) => dataPoint.color)
+            .style("stroke", (dataPoint: BarChartDataPoint) => dataPoint.strokeColor)
+            .style("stroke-width", (dataPoint: BarChartDataPoint) => `${dataPoint.strokeWidth}px`);
 
         this.tooltipServiceWrapper.addTooltip(barSelectionMerged,
             (datapoint: BarChartDataPoint) => this.getTooltipData(datapoint),
@@ -445,9 +494,36 @@ export class BarChart implements IVisual {
         }
 
         if (!selectionIds.length) {
+            const opacity: number = this.barChartSettings.generalView.opacity / 100;
             selection
+                .style("fill-opacity", opacity)
+                .style("stroke-opacity", opacity);
             return;
         }
+
+        const self: this = this;
+
+        selection.each(function (barDataPoint: BarChartDataPoint) {
+            const isSelected: boolean = self.isSelectionIdInArray(selectionIds, barDataPoint.selectionId);
+
+            const opacity: number = isSelected
+                ? BarChart.Config.solidOpacity
+                : BarChart.Config.transparentOpacity;
+
+            d3Select(this)
+                .style("fill-opacity", opacity)
+                .style("stroke-opacity", opacity);
+        });
+    }
+
+    private isSelectionIdInArray(selectionIds: ISelectionId[], selectionId: ISelectionId): boolean {
+        if (!selectionIds || !selectionId) {
+            return false;
+        }
+
+        return selectionIds.some((currentSelectionId: ISelectionId) => {
+            return currentSelectionId.includes(selectionId);
+        });
     }
 
     /**
@@ -477,19 +553,52 @@ export class BarChart implements IVisual {
                     selector: null
                 });
                 break;
+            case 'colorSelector':
+                for (let barDataPoint of this.barDataPoints) {
+                    objectEnumeration.push({
+                        objectName: objectName,
+                        displayName: barDataPoint.category,
+                        properties: {
+                            fill: {
+                                solid: {
+                                    color: barDataPoint.color
+                                }
+                            }
+                        },
+                        propertyInstanceKind: {
+                            fill: VisualEnumerationInstanceKinds.ConstantOrRule
+                        },
+                        altConstantValueSelector: barDataPoint.selectionId.getSelector(),
+                        selector: dataViewWildcard.createDataViewWildcardSelector(dataViewWildcard.DataViewWildcardMatchingOption.InstancesAndTotals)
+                    });
+                }
+                break;
             case 'generalView':
                 objectEnumeration.push({
                     objectName: objectName,
                     properties: {
-                        width: this.barChartSettings.generalView.width,
+                        opacity: this.barChartSettings.generalView.opacity,
+                        showHelpLink: this.barChartSettings.generalView.showHelpLink
                     },
                     validValues: {
-                        width: {
+                        opacity: {
                             numberRange: {
-                                min: 30,
+                                min: 10,
                                 max: 100
                             }
                         }
+                    },
+                    selector: null
+                });
+                break;
+            case 'averageLine':
+                objectEnumeration.push({
+                    objectName: objectName,
+                    properties: {
+                        show: this.barChartSettings.averageLine.show,
+                        displayName: this.barChartSettings.averageLine.displayName,
+                        fill: this.barChartSettings.averageLine.fill,
+                        showDataLabel: this.barChartSettings.averageLine.showDataLabel
                     },
                     selector: null
                 });
@@ -519,4 +628,117 @@ export class BarChart implements IVisual {
         }];
     }
 
+    private createHelpLinkElement(): Element {
+        let linkElement = document.createElement("a");
+        linkElement.textContent = "?";
+        linkElement.setAttribute("title", "Open documentation");
+        linkElement.setAttribute("class", "helpLink");
+        linkElement.addEventListener("click", () => {
+            this.host.launchUrl("https://microsoft.github.io/PowerBI-visuals/tutorials/building-bar-chart/adding-url-launcher-element-to-the-bar-chart/");
+        });
+        return linkElement;
+    };
+
+    private handleLandingPage(options: VisualUpdateOptions) {
+        if (!options.dataViews || !options.dataViews.length) {
+            if (!this.isLandingPageOn) {
+                this.isLandingPageOn = true;
+                const SampleLandingPage: Element = this.createSampleLandingPage();
+                this.element.appendChild(SampleLandingPage);
+
+                this.LandingPage = d3Select(SampleLandingPage);
+            }
+
+        } else {
+            if (this.isLandingPageOn && !this.LandingPageRemoved) {
+                this.LandingPageRemoved = true;
+                this.LandingPage.remove();
+            }
+        }
+    }
+
+    private createSampleLandingPage(): Element {
+        let div = document.createElement("div");
+
+        let header = document.createElement("h1");
+        header.textContent = "Sample Bar Chart Landing Page";
+        header.setAttribute("class", "LandingPage");
+        let p1 = document.createElement("a");
+        p1.setAttribute("class", "LandingPageHelpLink");
+        p1.textContent = "Learn more about Landing page";
+
+        p1.addEventListener("click", () => {
+            this.host.launchUrl("https://microsoft.github.io/PowerBI-visuals/docs/overview/");
+        });
+
+        div.appendChild(header);
+        div.appendChild(p1);
+
+        return div;
+    }
+
+    private getColorValue(color: Fill | string): string {
+        // Override color settings if in high contrast mode
+        if (this.host.colorPalette.isHighContrast) {
+            return this.host.colorPalette.foreground.value;
+        }
+
+        // If plain string, just return it
+        if (typeof (color) === 'string') {
+            return color;
+        }
+        // Otherwise, extract string representation from Fill type object
+        return color.solid.color;
+    }
+
+    private initAverageLine() {
+        this.averageLine = this.svg
+            .append('g')
+            .classed('averageLine', true);
+
+        this.averageLine.append('line')
+            .attr('id', 'averageLine');
+
+        this.averageLine.append('text')
+            .attr('id', 'averageLineLabel');
+    }
+
+    private handleAverageLineUpdate(height: number, width: number, yScale: ScaleLinear<number, number>) {
+        let average = this.calculateAverage();
+        let fontSize = Math.min(height, width) * BarChart.Config.xAxisFontMultiplier;
+        let chosenColor = this.getColorValue(this.barChartSettings.averageLine.fill);
+        // If there's no room to place lable above line, place it below
+        let labelYOffset = fontSize * ((yScale(average) > fontSize * 1.5) ? -0.5 : 1.5);
+
+        this.averageLine
+            .style("font-size", fontSize)
+            .style("display", (this.barChartSettings.averageLine.show) ? "initial" : "none")
+            .attr("transform", "translate(0, " + Math.round(yScale(average)) + ")");
+
+        this.averageLine.select("#averageLine")
+            .style("stroke", chosenColor)
+            .style("stroke-width", "3px")
+            .style("stroke-dasharray", "6,6")
+            .attr("x1", 0)
+            .attr("x1", "" + width);
+
+        this.averageLine.select("#averageLineLabel")
+            .text("Average: " + average.toFixed(2))
+            .attr("transform", "translate(0, " + labelYOffset + ")")
+            .style("fill", this.barChartSettings.averageLine.showDataLabel ? chosenColor : "none");
+    }
+
+    private calculateAverage(): number {
+        if (this.barDataPoints.length === 0) {
+            return 0;
+        }
+
+        let total = 0;
+
+        this.barDataPoints.forEach((value: BarChartDataPoint) => {
+            total += <number>value.value;
+        });
+
+        return total / this.barDataPoints.length;
+    }
 }

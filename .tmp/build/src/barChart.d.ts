@@ -17,11 +17,16 @@ export declare class BarChart implements IVisual {
     private barChartSettings;
     private tooltipServiceWrapper;
     private locale;
+    private helpLinkElement;
     private element;
+    private isLandingPageOn;
+    private LandingPageRemoved;
+    private LandingPage;
+    private averageLine;
     private barSelection;
     static Config: {
         xScalePadding: number;
-        width: number;
+        solidOpacity: number;
         transparentOpacity: number;
         margins: {
             top: number;
@@ -53,6 +58,7 @@ export declare class BarChart implements IVisual {
     private handleClick;
     private handleContextMenu;
     private syncSelectionState;
+    private isSelectionIdInArray;
     /**
      * Enumerates through the objects defined in the capabilities and adds the properties to the format pane
      *
@@ -68,4 +74,11 @@ export declare class BarChart implements IVisual {
      */
     destroy(): void;
     private getTooltipData;
+    private createHelpLinkElement;
+    private handleLandingPage;
+    private createSampleLandingPage;
+    private getColorValue;
+    private initAverageLine;
+    private handleAverageLineUpdate;
+    private calculateAverage;
 }
