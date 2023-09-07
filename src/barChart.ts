@@ -80,6 +80,7 @@ interface BarChartDataPoint {
  *
  * @interface
  * @property {{show:boolean}} enableAxis - Object property that allows axis to be enabled.
+ * @property {{testView.width:number}} testView - Object property that allows axis to be enabled.
  * @property {{generalView.opacity:number}} Bars Opacity - Controls opacity of plotted bars, values range between 10 (almost transparent) to 100 (fully opaque, default)
  * @property {{generalView.showHelpLink:boolean}} Show Help Button - When TRUE, the plot displays a button which launch a link to documentation.
  */
@@ -93,6 +94,11 @@ interface BarChartSettings {
         opacity: number;
         showHelpLink: boolean;
         helpLinkColor: string;
+    };
+
+    testView: {
+        width: number;
+        displayName: string;
     };
 
     averageLine: {
@@ -112,6 +118,10 @@ let defaultSettings: BarChartSettings = {
         opacity: 100,
         showHelpLink: false,
         helpLinkColor: "#80B0E0",
+    },
+    testView: {
+        width: 20,
+        displayName: "Bars width"
     },
     averageLine: {
         show: false,
@@ -169,6 +179,10 @@ function visualTransform(options: VisualUpdateOptions, host: IVisualHost): BarCh
             opacity: getValue<number>(objects, 'generalView', 'opacity', defaultSettings.generalView.opacity),
             showHelpLink: getValue<boolean>(objects, 'generalView', 'showHelpLink', defaultSettings.generalView.showHelpLink),
             helpLinkColor: strokeColor,
+        },
+        testView: {
+            width: getValue<number>(objects, 'testView', 'width', defaultSettings.testView.width),
+            displayName: getValue<string>(objects, 'testView', 'displayName', defaultSettings.testView.displayName),
         },
         averageLine: {
             show: getValue<boolean>(objects, 'averageLine', 'show', defaultSettings.averageLine.show),
@@ -407,8 +421,9 @@ export class BarChart implements IVisual {
         barSelectionMerged.classed('bar', true);
 
         const opacity: number = viewModel.settings.generalView.opacity / 100;
+        const barWidth: number = viewModel.settings.testView.width;
         barSelectionMerged
-            .attr("width", xScale.bandwidth())
+            .attr("width", barWidth)
             .attr("height", d => height - yScale(<number>d.value))
             .attr("y", d => yScale(<number>d.value))
             .attr("x", d => xScale(d.category))
@@ -591,6 +606,24 @@ export class BarChart implements IVisual {
                     selector: null
                 });
                 break;
+            case 'testView':
+                    objectEnumeration.push({
+                        objectName: objectName,
+                        properties: {
+                            width: this.barChartSettings.testView.width,
+                            displayName: this.barChartSettings.testView.displayName
+                        },
+                        validValues: {
+                            width: {
+                                numberRange: {
+                                    min: 20,
+                                    max: 100
+                                }
+                            }
+                        },
+                        selector: null
+                    });
+                    break;
             case 'averageLine':
                 objectEnumeration.push({
                     objectName: objectName,
